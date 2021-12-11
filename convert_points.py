@@ -6,7 +6,11 @@ from geojson import Point
 from geojson import Polygon
 import math
 
-#assuming area is defined on a flat plane, centered on the plots centerpoint.
+# this function calculates the new lon/lat of a new point resting at center+p, where
+# p is an x/y point on a plane centered at.. center. and center is a lon/lat pair
+# (this is used assuming area is defined on a flat plane, centered on the plots centerpoint,
+# not as an area of the earth's surface which would be curved. from some preliminary searching,
+# this does not seem to be a common way to measure land area, which is good for us :D)
 def plane_projection(center, p):
     (dx, dy)=p
     (center_lon, center_lat)=center
@@ -39,6 +43,8 @@ def longitude_latitude_to_cartesian(lon, lat):
     z=radius*math.sin(lat)
     return (x,y,z)
 
+#read the csv file into a list of dictionaries, by applying a filter function to avoid
+#bringing the whole file into memory
 def read_data_as_list(filename, filter_fn):
     with open(filename) as csvfile:
         reader=csv.DictReader(csvfile)
@@ -56,8 +62,16 @@ def distance(p1, p2):
     dz=p1[2]-p2[2]
     return math.sqrt(dx*dx+dy*dy+dz*dz)
 
+#would be nice to use a real vector library if this gets more complicated..
+def rotate_2d(p, angle):
+    (x,y) = p
+    #from https://academo.org/demos/rotation-about-point/
+    return (x*math.cos(angle)-y*math.sin(angle),
+            y*math.cos(angle)+x*math.sin(angle))
+    # return (x,y)
+
 # when the plots are not aligned to lat/lon lines, but are offset by some angle, we
-# can use two left/right adjacent plots to determine a suitable angle from latitude lines
+# can use two left/right adjacent plot centers to determine a suitable angle from latitude lines
 # that the plots sit on. in our data, there seems to be a slight angle from
 # true lat/lon grid.
 def angle_between_plots(filename, fid1, fid2):
@@ -75,18 +89,12 @@ def angle_between_plots(filename, fid1, fid2):
     # TODO this bit could use work.. depending on the data, the angle might be the same
     # depending on if data[0] is to the left or the right of data[1]. for our dataset
     # this.. works. but with a different dataset, we might need to be more selective
-    # in how we assign data[0] and data[1]
+    # in how we assign data[0] and data[1]. but, for different data, the whole assumption
+    # of a simple angle offset may not hold up either...
     hypotenuese=distance(data[0]['position'], data[1]['position'])
     side_length=distance(data[0]['position'], triangle[2])
     angle=math.asin(side_length/hypotenuese)
     return -angle
-
-def rotate_2d(p, angle):
-    (x,y) = p
-    #from https://academo.org/demos/rotation-about-point/
-    return (x*math.cos(angle)-y*math.sin(angle),
-            y*math.cos(angle)+x*math.sin(angle))
-    # return (x,y)
 
 
 #TODO make filename a cli parameter
@@ -94,9 +102,8 @@ filename='plots.csv'
 
 centerpoints=[] # a collection of Point features for the plot centers. why not.
 plots=[] # the 'plots: ' json field
-smallest_plot_area=math.inf
+smallest_plot_area=math.inf #we might use this as an error bound later.
 angle_offset=angle_between_plots(filename, '117', '118')
-# print(math.degrees(angle_offset))
 
 with open(filename) as csvfile:
     reader=csv.DictReader(csvfile)
@@ -106,7 +113,7 @@ with open(filename) as csvfile:
         area=float(row['Area'])
         lon=float(row['Longitude'])
         lat=float(row['Latitude'])
-        #find the smallest plot. we might use this as an error bound later
+        #find the smallest plot.
         if smallest_plot_area>area:
             smallest_plot_area=area
 
@@ -135,21 +142,8 @@ with open(filename) as csvfile:
         # features.append(center)
         # features.append(plot) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
 
+
 #create and print out the final collection in geojson format
 collection=FeatureCollection(plots)
 collection.plots=plots
 print(collection)
-# print(smallest_plot_area)
-
-# def binary_search(expected_value, guess1, guess2, max_iter=1000):
-#     for i in range(max_iter):
-#         area=solid_angle(guess)
-#     return solution
-
-# def solid_angle(n,s,e,w):
-#     # taken from equatorial radius here https://en.wikipedia.org/wiki/Earth_radius
-#     radius=6378000 #equatorial radius
-#     radius=6371000 #globally average radius
-#     #see https://en.wikipedia.org/wiki/Solid_angle for formulas
-#     area=(sin(theta_north)-sin(theta_south))*(theta_east-theta_west)*radius
-#     return area
