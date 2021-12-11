@@ -6,15 +6,16 @@ from geojson import Point
 from geojson import Polygon
 import math
 
-
-
 #assuming area is defined on a flat plane, centered on the plots centerpoint.
-def plane_projection(center, dx, dy):
+def plane_projection(center, p):
+    (dx, dy)=p
     (center_lon, center_lat)=center
-    # taken from equatorial radius here https://en.wikipedia.org/wiki/Earth_radius
-    radius=6378000 #equatorial radius
+    # taken from here https://en.wikipedia.org/wiki/Earth_radius
+    # radius=6378000 #equatorial radius
     radius=6371000 #globally average radius
     # determine the spherical angle from the center, to a point directly to the left of the center by dx. note this point is *not* on the surface of the earth anymore.
+    # c=center of plot
+    #
     # c--c+dx
     # | /
     # |/ <-angle
@@ -24,22 +25,90 @@ def plane_projection(center, dx, dy):
     #add the delta to the center's lon/lat (aka, sphereical coordinates)
     return (center_lon+dx_angle, center_lat+dy_angle)
 
+def longitude_latitude_to_cartesian(lon, lat):
+    # taken from here https://en.wikipedia.org/wiki/Earth_radius
+    # radius=6378000 #equatorial radius
+    radius=6371000 #globally average radius
+    #going to need everything in radians...
+    lat=math.radians(lat)
+    lon=math.radians(lon)
+    # calculation from https://stackoverflow.com/questions/1185408/converting-from-longitude-latitude-to-cartesian-coordinates
+    # note the comments regarding sphere/elipsiod assumptions of the earth.. we assume a sphereical earth here.
+    x=radius*math.cos(lat)*math.cos(lon)
+    y=radius*math.cos(lat)*math.sin(lon)
+    z=radius*math.sin(lat)
+    return (x,y,z)
+
+def read_data_as_list(filename, filter_fn):
+    with open(filename) as csvfile:
+        reader=csv.DictReader(csvfile)
+        data=[]
+        for row in reader:
+            #put them in our list if they meet the criteria, so we never keep the whole file in memory...
+            if filter_fn(row):
+                data.append(row)
+    return data
+
+#would be nice to use a real vector library if this gets more complicated..
+def distance(p1, p2):
+    dx=p1[0]-p2[0]
+    dy=p1[1]-p2[1]
+    dz=p1[2]-p2[2]
+    return math.sqrt(dx*dx+dy*dy+dz*dz)
+
+# when the plots are not aligned to lat/lon lines, but are offset by some angle, we
+# can use two left/right adjacent plots to determine a suitable angle from latitude lines
+# that the plots sit on. in our data, there seems to be a slight angle from
+# true lat/lon grid.
+def angle_between_plots(filename, fid1, fid2):
+    data=read_data_as_list(filename, lambda row: row['FID']==fid1 or row['FID']==fid2)
+    for row in data:
+        (x,y,z) = longitude_latitude_to_cartesian(float(row['Longitude']),
+                                                  float(row['Latitude']))
+        row['position']=(x,y,z)
+    triangle=[
+        data[0]['position'],
+        data[1]['position'],
+        longitude_latitude_to_cartesian(float(data[0]['Longitude']),
+                                        float(data[1]['Latitude']))
+    ]
+    # TODO this bit could use work.. depending on the data, the angle might be the same
+    # depending on if data[0] is to the left or the right of data[1]. for our dataset
+    # this.. works. but with a different dataset, we might need to be more selective
+    # in how we assign data[0] and data[1]
+    hypotenuese=distance(data[0]['position'], data[1]['position'])
+    side_length=distance(data[0]['position'], triangle[2])
+    angle=math.asin(side_length/hypotenuese)
+    return -angle
+
+def rotate_2d(p, angle):
+    (x,y) = p
+    #from https://academo.org/demos/rotation-about-point/
+    return (x*math.cos(angle)-y*math.sin(angle),
+            y*math.cos(angle)+x*math.sin(angle))
+    # return (x,y)
+
+
+#TODO make filename a cli parameter
+filename='plots.csv'
 
 centerpoints=[] # a collection of Point features for the plot centers. why not.
 plots=[] # the 'plots: ' json field
-features=[] # the 'features:' json field
 smallest_plot_area=math.inf
-#TODO make filename a parameter
-with open('plots.csv', newline='\n') as csvfile:
-    reader=csv.reader(csvfile, delimiter=',')
-    #skip the title row
-    reader.__next__()
+angle_offset=angle_between_plots(filename, '117', '118')
+# print(math.degrees(angle_offset))
+
+with open(filename) as csvfile:
+    reader=csv.DictReader(csvfile)
     for row in reader:
         #name our fields
-        fid=int(row[0])
-        area=float(row[1])
-        lon=float(row[2])
-        lat=float(row[3])
+        fid=int(row['FID'])
+        area=float(row['Area'])
+        lon=float(row['Longitude'])
+        lat=float(row['Latitude'])
+        #find the smallest plot. we might use this as an error bound later
+        if smallest_plot_area>area:
+            smallest_plot_area=area
 
         #find the centerpoint
         center=(lon,lat)
@@ -52,24 +121,25 @@ with open('plots.csv', newline='\n') as csvfile:
         dy=length/2
         corners=[
             [
-            plane_projection(center, dx, dy),
-            plane_projection(center, -dx, dy),
-            plane_projection(center, -dx, -dy),
-            plane_projection(center, dx, -dy),
-            plane_projection(center, dx, dy),
+                plane_projection(center, rotate_2d((dx, dy), angle_offset)),
+                plane_projection(center, rotate_2d((-dx, dy), angle_offset)),
+                plane_projection(center, rotate_2d((-dx, -dy), angle_offset)),
+                plane_projection(center, rotate_2d((dx, -dy), angle_offset)),
+                plane_projection(center, rotate_2d((dx, dy), angle_offset)),
             ]
         ]
 
         #and add the polygon to our features
-        plot=Feature(geometry=Polygon(corners))
+        plot=Feature(geometry=Polygon(corners), properties={"FID":fid})
         plots.append(plot)
         # features.append(center)
-        features.append(plot) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
+        # features.append(plot) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
 
 #create and print out the final collection in geojson format
-collection=FeatureCollection(features)
+collection=FeatureCollection(plots)
 collection.plots=plots
 print(collection)
+# print(smallest_plot_area)
 
 # def binary_search(expected_value, guess1, guess2, max_iter=1000):
 #     for i in range(max_iter):
