@@ -6,6 +6,8 @@ from geojson import Point
 from geojson import Polygon
 import math
 import numpy as np
+import sys
+import argparse
 
 # this function calculates the new lon/lat of a new point resting at center+p, where
 # p is an x/y point on a plane centered at.. center. and center is a lon/lat pair
@@ -148,154 +150,162 @@ def place_on_line(line, point):
         point=cartesian_to_longitude_latitude(v[0], v[1], v[2])
         return point
 
-#TODO make filename a cli parameter
-filename='plots.csv'
+def main(argv):
+    parser=argparse.ArgumentParser(description="converts a csv file of plot centers and area into geojson formated polygon boundries")
+    parser.add_argument('filename', help="the input csv file to process")
+    parser.add_argument('-a', '--adjacent-plots', dest='plots', required=True, help='a comma seperated string of two plots that are to the left/right of each other.')
+    args=parser.parse_args()
 
-angle_offset=angle_between_plots(filename, '117', '118')
+    filename=args.filename
+    plots=args.plots.split(',')
+    plot1=plots[0].lstrip()
+    plot2=plots[1].lstrip()
 
-# rather than build the geojson objects directly, we know that plot corners will not
-# align with one another. to fix this, we will first calculate and collect all the
-# corner points first, then do a pass to average nearby corners. this will require
-# couple passes through the data, first to find a good estimate of "nearby" using
-# the smallest plot available. the next to actually calculate the corners in lon/lat
-# then a pass through all the points to average them, and finally a pass through
-# each plot again, this time picking the correct averaged point, instead of calculating
-# the "real" corner positions.
-# this will hold our points in a list-of-list data (list of lists-that-contain-similar-points)
-points=[]
+    angle_offset=angle_between_plots(filename, plot1, plot2)
 
-#find the smallest plot, and use it to calculate an error bound between "connected" points
-smallest_plot_area=math.inf
-distance_error=math.inf
-with open(filename) as csvfile:
-    reader=csv.DictReader(csvfile)
-    for row in reader:
-        #name our fields
-        fid=int(row['FID'])
-        area=float(row['Area'])
-        lon=float(row['Longitude'])
-        lat=float(row['Latitude'])
-        #find the smallest plot.
-        if smallest_plot_area>area:
-            smallest_plot_area=area
+    # rather than build the geojson objects directly, we know that plot corners will not
+    # align with one another. to fix this, we will first calculate and collect all the
+    # corner points first, then do a pass to average nearby corners. this will require
+    # couple passes through the data, first to find a good estimate of "nearby" using
+    # the smallest plot available. the next to actually calculate the corners in lon/lat
+    # then a pass through all the points to average them, and finally a pass through
+    # each plot again, this time picking the correct averaged point, instead of calculating
+    # the "real" corner positions.
+    # this will hold our points in a list-of-list data (list of lists-that-contain-similar-points)
+    points=[]
+
+    #find the smallest plot, and use it to calculate an error bound between "connected" points
+    smallest_plot_area=math.inf
+    distance_error=math.inf
+    with open(filename) as csvfile:
+        reader=csv.DictReader(csvfile)
+        for row in reader:
+            #name our fields
+            fid=int(row['FID'])
+            area=float(row['Area'])
+            lon=float(row['Longitude'])
+            lat=float(row['Latitude'])
+            #find the smallest plot.
+            if smallest_plot_area>area:
+                smallest_plot_area=area
+                length=math.sqrt(area)
+                distance_error=length/3.0 #just use some fraction of the smallest plot's side length
+
+    centerpoints=[] # a collection of Point features for the plot centers. why not.
+    plots=[] # a collection of plot object that include the corner indexes into 'points', and other data as a dict
+    # find all the projected corner points, and match them together in the 'points' list
+    with open(filename) as csvfile:
+        reader=csv.DictReader(csvfile)
+        for row in reader:
+            #name our fields
+            fid=int(row['FID'])
+            area=float(row['Area'])
+            lon=float(row['Longitude'])
+            lat=float(row['Latitude'])
+            #find the smallest plot.
+            if smallest_plot_area>area:
+                smallest_plot_area=area
+
+            #find the centerpoint
+            center=(lon,lat)
+            centerpoints.append(Feature(geometry=Point([lon,lat])))
+
+            # find the corner points!
+            #assuming a flat plane...
             length=math.sqrt(area)
-            distance_error=length/3.0 #just use some fraction of the smallest plot's side length
+            dx=length/2
+            dy=length/2
+            corners=[
+                    plane_projection(center, rotate_2d((dx, dy), angle_offset)),
+                    plane_projection(center, rotate_2d((-dx, dy), angle_offset)),
+                    plane_projection(center, rotate_2d((-dx, -dy), angle_offset)),
+                    plane_projection(center, rotate_2d((dx, -dy), angle_offset)),
+            ]
 
-centerpoints=[] # a collection of Point features for the plot centers. why not.
-plots=[] # a collection of plot object that include the corner indexes into 'points', and other data as a dict
-# find all the projected corner points, and match them together in the 'points' list
-with open(filename) as csvfile:
-    reader=csv.DictReader(csvfile)
-    for row in reader:
-        #name our fields
-        fid=int(row['FID'])
-        area=float(row['Area'])
-        lon=float(row['Longitude'])
-        lat=float(row['Latitude'])
-        #find the smallest plot.
-        if smallest_plot_area>area:
-            smallest_plot_area=area
+            #loop through each corner, trying to find a close existing point
+            corner_indexes=[]
+            for corner in corners:
+                bucket_found= False
+                #look at all the existing points...
+                for i, point_bucket in enumerate(points):
+                    existing_point=point_bucket[0] # no need to check against all the points. if we are close to one, we should be close to all of them.
+                    # if it is close, we're done.
+                    if distance_lonlat(corner, existing_point)<distance_error:
+                        corner_indexes.append(i)
+                        point_bucket.append(corner)
+                        bucket_found=True
+                        break
+                # if there are no close points, we add to the list.
+                if not bucket_found:
+                    corner_indexes.append(len(points))
+                    points.append([corner])
 
-        #find the centerpoint
-        center=(lon,lat)
-        centerpoints.append(Feature(geometry=Point([lon,lat])))
+            plots.append({
+                'corners': corner_indexes,
+                'fid': fid,
+                'area': area,
+                'lon': lon,
+                'lat': lat,
+            })
+    # average together "close" points, aka points in the same bucket
+    for point_bucket in points:
+        avg_lat=0
+        avg_lon=0
+        for point in point_bucket:
+            avg_lat+=point[0]
+            avg_lon+=point[1]
+        avg_lat/=len(point_bucket)
+        avg_lon/=len(point_bucket)
+        point_bucket.insert(0, (avg_lat, avg_lon))
+    # and finally, make the geojson features out of the points
+    plot_features=[]
+    features=[]
+    # need to sort by size so that gaps of smaller plots are filled by processing larger plots.
+    plots.sort(reverse=True, key=lambda plot: plot['area'])
+    for plot in plots:
+        corners=plot['corners']
+        fid=plot['fid']
+        corners.append(corners[0]) #to make a enclosed shape
 
-        # find the corner points!
-        #assuming a flat plane...
-        length=math.sqrt(area)
-        dx=length/2
-        dy=length/2
-        corners=[
-                plane_projection(center, rotate_2d((dx, dy), angle_offset)),
-                plane_projection(center, rotate_2d((-dx, dy), angle_offset)),
-                plane_projection(center, rotate_2d((-dx, -dy), angle_offset)),
-                plane_projection(center, rotate_2d((dx, -dy), angle_offset)),
+        # for each corner idx, pick a point out of the existing point bucket at that index. this should be the averaged point.
+        corners=list(map(lambda idx: points[idx][0], corners))
+
+        # now, to avoid gaps, we need to find points that lie "close" to one of this plots borders,
+        # anf if so, place it exactly on the border.
+        sides=[
+            (corners[0], corners[1]), #I'm sure there's a more elegant way to do this..
+            (corners[1], corners[2]),
+            (corners[2], corners[3]),
+            (corners[3], corners[0]),
         ]
 
-        #loop through each corner, trying to find a close existing point
-        corner_indexes=[]
-        for corner in corners:
-            bucket_found= False
-            #look at all the existing points...
-            for i, point_bucket in enumerate(points):
-                existing_point=point_bucket[0] # no need to check against all the points. if we are close to one, we should be close to all of them.
-                # if it is close, we're done.
-                if distance_lonlat(corner, existing_point)<distance_error:
-                    corner_indexes.append(i)
-                    point_bucket.append(corner)
-                    bucket_found=True
-                    break
-            # if there are no close points, we add to the list.
-            if not bucket_found:
-                corner_indexes.append(len(points))
-                points.append([corner])
+        for side in sides:
+            points_sharing_side=0
+            for point_bucket in points:
+                # if distside[0]!=point_bucket[0] and not side[1]!=point_bucket[0]: #no need to compare if its the same point
+                    if point_line_distance(side, point_bucket[0])<distance_error:
+                        point_bucket[0] = place_on_line(side, point_bucket[0])
+                        points_sharing_side+=1
+            # print("sharing side:", points_sharing_side)
 
-        plots.append({
-            'corners': corner_indexes,
-            'fid': fid,
-            'area': area,
-            'lon': lon,
-            'lat': lat,
-        })
-# average together "close" points, aka points in the same bucket
-for point_bucket in points:
-    avg_lat=0
-    avg_lon=0
-    for point in point_bucket:
-        avg_lat+=point[0]
-        avg_lon+=point[1]
-    avg_lat/=len(point_bucket)
-    avg_lon/=len(point_bucket)
-    point_bucket.insert(0, (avg_lat, avg_lon))
-# and finally, make the geojson features out of the points
-plot_features=[]
-features=[]
-# need to sort by size so that gaps of smaller plots are filled by processing larger plots.
-plots.sort(reverse=True, key=lambda plot: plot['area'])
-for plot in plots:
-    corners=plot['corners']
-    fid=plot['fid']
-    corners.append(corners[0]) #to make a enclosed shape
+        # print(corners)
+        #and add the polygon to our features
+        polygon=Feature(geometry=Polygon([
+            [
+                corners[0],
+                corners[1],
+                corners[2],
+                corners[3],
+                corners[4],
+            ]
+        ]), properties={"FID":fid})
+        plot_features.append(polygon)
+        features.append(polygon) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
 
-    # for each corner idx, pick a point out of the existing point bucket at that index. this should be the averaged point.
-    corners=list(map(lambda idx: points[idx][0], corners))
+    #create and print out the final collection in geojson format
+    collection=FeatureCollection(features)
+    collection.plots=plot_features
+    print(collection)
 
-    # now, to avoid gaps, we need to find points that lie "close" to one of this plots borders,
-    # anf if so, place it exactly on the border.
-    sides=[
-        (corners[0], corners[1]), #I'm sure there's a more elegant way to do this..
-        (corners[1], corners[2]),
-        (corners[2], corners[3]),
-        (corners[3], corners[0]),
-    ]
-
-    for side in sides:
-        points_sharing_side=0
-        for point_bucket in points:
-            # if distside[0]!=point_bucket[0] and not side[1]!=point_bucket[0]: #no need to compare if its the same point
-                if point_line_distance(side, point_bucket[0])<distance_error:
-                    point_bucket[0] = place_on_line(side, point_bucket[0])
-                    points_sharing_side+=1
-        # print("sharing side:", points_sharing_side)
-
-    # print(corners)
-    #and add the polygon to our features
-    polygon=Feature(geometry=Polygon([
-        [
-            corners[0],
-            corners[1],
-            corners[2],
-            corners[3],
-            corners[4],
-        ]
-    ]), properties={"FID":fid})
-    plot_features.append(polygon)
-    features.append(polygon) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
-
-# print(points)
-# print(plots)
-
-#create and print out the final collection in geojson format
-collection=FeatureCollection(features)
-# collection.plots=plot_features
-print(collection)
+if __name__ == "__main__":
+   main(sys.argv[1:])
