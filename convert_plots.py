@@ -153,15 +153,18 @@ def place_on_line(line, point):
 def main(argv):
     parser=argparse.ArgumentParser(description="converts a csv file of plot centers and area into geojson formated polygon boundries")
     parser.add_argument('filename', help="the input csv file to process")
-    parser.add_argument('-a', '--adjacent-plots', dest='plots', required=True, help='a comma seperated string of two plots that are to the left/right of each other.')
+    parser.add_argument('-a', '--adjacent-plots', dest='plots', required=False, help='a comma seperated string of two plots that are to the left/right of each other.')
     args=parser.parse_args()
 
     filename=args.filename
-    plots=args.plots.split(',')
-    plot1=plots[0].lstrip()
-    plot2=plots[1].lstrip()
+    if args.plots is not None:
+        plots=args.plots.split(',')
+        plot1=plots[0].lstrip()
+        plot2=plots[1].lstrip()
 
-    angle_offset=angle_between_plots(filename, plot1, plot2)
+    angle_offset=0.0
+    if args.plots is not None:
+        angle_offset=angle_between_plots(filename, plot1, plot2)
 
     # rather than build the geojson objects directly, we know that plot corners will not
     # align with one another. to fix this, we will first calculate and collect all the

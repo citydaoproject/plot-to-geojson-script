@@ -10,3 +10,7 @@ There are several assumptions about this data:
 `usage: convert_plots.py [-h] -a PLOTS filename`
     
 where PLOTS are two, comma seperated plot id's that are to the left/right of each other. this is used to calculate the angle that the plots align, relative to latitude and longitude lines.
+
+example using provided csv, where plots 117 and 118 are adjacent plots:
+
+`python convert_plots.py plots.csv -a 117,118 > output.json`
