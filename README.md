@@ -7,13 +7,17 @@ There are several assumptions about this data:
 
 # Usage
 
-`usage: convert_plots.py [-h] -a PLOTS filename`
+`usage: convert_plots.py [-h] [-a PLOTS] [-t TOLERANCE] [-b] filename`
     
 where PLOTS are two, comma seperated plot id's that are to the left/right of each other. this is used to calculate the angle that the plots align, relative to latitude and longitude lines.
 
 example using provided csv, where plots 117 and 118 are adjacent plots:
 
 `python convert_plots.py plots.csv -a 117,118 > output.json`
+
+example using provided csv to calculate only the border, using the same adjacent plots of 117,118 and the default tolerance for geometric union operations:
+
+`python convert_plots.py plots.csv -a 117,118 -b > border.json`
 
 # Note about angle offset and adjacent plots
 

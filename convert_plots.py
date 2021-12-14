@@ -4,6 +4,9 @@ from geojson import FeatureCollection
 from geojson import Feature
 from geojson import Point
 from geojson import Polygon
+from shapely.ops import unary_union
+from shapely.ops import snap
+from shapely.geometry import shape
 import math
 import numpy as np
 import sys
@@ -136,6 +139,18 @@ def point_line_distance(line, point):
     return np.hypot(h, np.linalg.norm(c))
 
 def place_on_line(line, point):
+    (p1, p2)=line
+    x1=np.array(p1)
+    x2=np.array(p2)
+    x0=np.array(point)
+    t=-np.dot(x1-x0, x2-x1)/pow(np.linalg.norm(x2-x1), 2)
+    v=x1+t*(x2-x1)
+    if t<0.0001 or t>0.9999: #likely endpoints. these are duplicates. we don't need to move them.
+        return point
+    else:
+        point=(v[0], v[1])
+        return point
+def place_on_line_cartesian(line, point):
     # #see formula from here: https://mathworld.wolfram.com/Point-LineDistance3-Dimensional.html
     # #everything as cartesian to make things easy...
     (p1, p2)=line
@@ -150,10 +165,48 @@ def place_on_line(line, point):
         point=cartesian_to_longitude_latitude(v[0], v[1], v[2])
         return point
 
+
+def geojson_to_shapely(feature):
+    return shape(feature.geometry)
+def shapely_to_geojson(polygon):
+    polygon=list(polygon.exterior.coords)
+    return Feature(geometry=Polygon([
+        polygon
+        ]))
+
+def  calculate_border(plots, tolerance):
+    polygons=list(map(geojson_to_shapely, plots))
+    #we add a small "buffer" around each polygon to ensure they overlap while we union together every plot
+    border=unary_union(list(map(lambda p: p.buffer(tolerance), polygons)))
+    #our plot may be non-contiguous. shapely already handles this, so it's trivial to add here.
+    if hasattr(border, '__iter__'):
+        border_polygons=list(border)
+    else:
+        border_polygons=[border]
+
+    # now, to undo our "buffer" earlier, we will snap all points back to the original points on the plots.
+    # this isn't very prety, but it should "work" without adding more assumptions.
+    for idx, polygon in enumerate(border_polygons):
+        #get rid of rounded corners caused by .buffer earlier by simplifying the polygon with a similar tolerance
+        polygon=polygon.simplify(tolerance*3)
+        for original in polygons:
+            polygon=snap(polygon, original, tolerance*2)
+        border_polygons[idx]=polygon
+
+    border=list(map(shapely_to_geojson, border_polygons))
+    return border
+
+
+
+
+
 def main(argv):
     parser=argparse.ArgumentParser(description="converts a csv file of plot centers and area into geojson formated polygon boundries")
     parser.add_argument('filename', help="the input csv file to process")
     parser.add_argument('-a', '--adjacent-plots', dest='plots', required=False, help='a comma seperated string of two plots that are to the left/right of each other.')
+    parser.add_argument('-t', '--tolerance', dest='tolerance', required=False, help='when used with --border, a tolerance to use to union adjacent plots. without this, adjacent plots may not merge correctly. a default of 0.000001 is used. if the border is missing corners, try a smaller value. if the border has holes, or is in multiple polygons when it should not be tru using a larger value.', default=0.000001, type=float)
+    parser.add_argument('-b', '--border', dest='border', required=False, action='store_true', help='output a file containing only the border of all the plots, instead of individual plots')
+
     args=parser.parse_args()
 
     filename=args.filename
@@ -305,10 +358,14 @@ def main(argv):
         plot_features.append(polygon)
         features.append(polygon) #standard convention seems to use the "feature:" json field, output however wants it to be under "plots:" field. adding to "features:" lets standard visualization tools work well
 
-    #create and print out the final collection in geojson format
-    collection=FeatureCollection(features)
-    collection.plots=plot_features
-    print(collection)
+    if args.border:
+        feature=calculate_border(plot_features, args.tolerance)
+        print(FeatureCollection(feature))
+    else:
+        #create and print out the final collection in geojson format
+        collection=FeatureCollection(features)
+        collection.plots=plot_features
+        print(collection)
 
 if __name__ == "__main__":
    main(sys.argv[1:])
